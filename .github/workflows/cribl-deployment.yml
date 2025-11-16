@@ -61,6 +61,11 @@ jobs:
     name: Deploy Cribl Leader Infrastructure
     runs-on: ubuntu-latest
     
+    # Set explicit permissions for GITHUB_TOKEN (security best practice)
+    permissions:
+      contents: read       # Allow reading repository contents
+      id-token: write      # Allow AWS credential federation (if using OIDC)
+    
     steps:
       # Stage 1: Checkout Repository
       - name: Checkout Repository
