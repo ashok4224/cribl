@@ -1,0 +1,191 @@
+# ============================================================================
+# CRIBL LEADER DEPLOYMENT PIPELINE - GitHub Actions
+# ============================================================================
+# 
+# ABOUT THIS WORKFLOW:
+# This GitHub Actions workflow automates the deployment of Cribl Leader nodes
+# on AWS infrastructure. It replicates the functionality of the Jenkins pipeline
+# but uses GitHub Actions as the CI/CD platform.
+# 
+# PURPOSE:
+# - Automate the deployment of Cribl Leader nodes using AWS CloudFormation
+# - Provide Infrastructure as Code (IaC) for Cribl Leader infrastructure
+# - Ensure consistent and repeatable deployments across environments
+# - Manage deployment configuration through YAML files (grd.yaml)
+# 
+# WORKFLOW STAGES:
+# 1. Checkout Repository - Checks out the repository code
+# 2. Load Configuration - Reads grd.yaml for deployment parameters
+# 3. Build Parameters - Converts YAML parameters to JSON for CloudFormation
+# 4. Validate Template - Ensures CloudFormation template is valid
+# 5. Deploy Infrastructure - Creates/updates AWS resources via CloudFormation
+# 6. Run Scripts - Executes userdata and bootstrap scripts
+# 7. Notify Team - Sends notification on deployment status
+# 
+# DEPLOYMENT DETAILS:
+# - AWS Region: ap-south-1 (configurable in grd.yaml)
+# - Instance Type: t3.large (configurable)
+# - Auto Scaling: Deploys 2 Leader nodes by default
+# - Storage: 50GB EBS volumes with gp3 type
+# - Cribl Version: 4.0.0 (defined in userdata script)
+# 
+# PREREQUISITES:
+# - GitHub repository with this workflow file
+# - AWS credentials stored in GitHub Secrets:
+#   * AWS_ACCESS_KEY_ID - AWS access key for authentication
+#   * AWS_SECRET_ACCESS_KEY - AWS secret key for authentication
+# - Valid AMI ID, VPC, Subnet, and Security Group in target AWS region
+# - Email notification service configured (optional)
+# 
+# GITHUB SECRETS REQUIRED:
+# - AWS_ACCESS_KEY_ID: Your AWS access key
+# - AWS_SECRET_ACCESS_KEY: Your AWS secret access key
+# - NOTIFICATION_EMAIL: Email address for notifications (optional)
+# 
+# MAINTAINED BY: ashok.team@company.com
+# ============================================================================
+
+name: Cribl Leader Deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allows manual trigger from GitHub UI
+
+env:
+  AWS_REGION: ap-south-1  # Will be overridden by grd.yaml
+
+jobs:
+  deploy-cribl-leader:
+    name: Deploy Cribl Leader Infrastructure
+    runs-on: ubuntu-latest
+    
+    # Set explicit permissions for GITHUB_TOKEN (security best practice)
+    permissions:
+      contents: read       # Allow reading repository contents
+      id-token: write      # Allow AWS credential federation (if using OIDC)
+    
+    steps:
+      # Stage 1: Checkout Repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      # Stage 2: Configure AWS Credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1  # Default region, will be updated from grd.yaml
+      
+      # Stage 3: Install yq for YAML parsing (equivalent to Jenkins readYaml)
+      - name: Install yq for YAML Processing
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+      
+      # Stage 4: Load grd.yaml Configuration
+      - name: Load Configuration from grd.yaml
+        id: config
+        run: |
+          # Read values from grd.yaml and export as environment variables
+          echo "STACK_NAME=$(yq '.stack_name' grd.yaml)" >> $GITHUB_ENV
+          echo "AWS_REGION=$(yq '.region' grd.yaml)" >> $GITHUB_ENV
+          echo "TEMPLATE_FILE=$(yq '.cloudformation_template' grd.yaml)" >> $GITHUB_ENV
+          echo "USERDATA_FILE=$(yq '.userdata_script' grd.yaml)" >> $GITHUB_ENV
+          echo "BOOTSTRAP_FILE=$(yq '.bootstrap_script' grd.yaml)" >> $GITHUB_ENV
+          echo "EMAIL_TO=$(yq '.notification_email' grd.yaml)" >> $GITHUB_ENV
+          
+          # Display loaded configuration
+          echo "Configuration loaded:"
+          echo "Stack Name: $(yq '.stack_name' grd.yaml)"
+          echo "AWS Region: $(yq '.region' grd.yaml)"
+          echo "Template: $(yq '.cloudformation_template' grd.yaml)"
+      
+      # Stage 5: Build CloudFormation Parameters JSON
+      - name: Build CloudFormation Parameters JSON
+        run: |
+          # Extract parameters from grd.yaml and create parameters.json
+          yq -o=json '.parameters' grd.yaml > parameters_raw.json
+          
+          # Convert to CloudFormation parameter format
+          cat parameters_raw.json | jq -r 'to_entries | map({ParameterKey: .key, ParameterValue: .value}) | .' > parameters.json
+          
+          echo "Generated parameters.json:"
+          cat parameters.json
+      
+      # Stage 6: Validate CloudFormation Template
+      - name: Validate CloudFormation Template
+        run: |
+          echo "Validating CloudFormation template: ${{ env.TEMPLATE_FILE }}"
+          aws cloudformation validate-template \
+            --template-body file://${{ env.TEMPLATE_FILE }} \
+            --region ${{ env.AWS_REGION }}
+          echo "✓ Template validation successful"
+      
+      # Stage 7: Deploy Infrastructure via CloudFormation
+      - name: Deploy Infrastructure via CloudFormation
+        run: |
+          echo "Deploying CloudFormation stack: ${{ env.STACK_NAME }}"
+          aws cloudformation deploy \
+            --stack-name ${{ env.STACK_NAME }} \
+            --template-file ${{ env.TEMPLATE_FILE }} \
+            --parameter-overrides file://parameters.json \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region ${{ env.AWS_REGION }}
+          echo "✓ CloudFormation deployment completed"
+      
+      # Stage 8: Run Userdata Script
+      - name: Run Userdata Script
+        run: |
+          echo "Executing userdata script: ${{ env.USERDATA_FILE }}"
+          bash ${{ env.USERDATA_FILE }}
+          echo "✓ Userdata script completed"
+      
+      # Stage 9: Run Bootstrap Script
+      - name: Run Bootstrap Script
+        run: |
+          echo "Executing bootstrap script: ${{ env.BOOTSTRAP_FILE }}"
+          bash ${{ env.BOOTSTRAP_FILE }}
+          echo "✓ Bootstrap script completed"
+      
+      # Stage 10: Deployment Summary
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo "========================================="
+          echo "Cribl Leader Deployment Completed"
+          echo "========================================="
+          echo "Stack Name: ${{ env.STACK_NAME }}"
+          echo "Region: ${{ env.AWS_REGION }}"
+          echo "Status: SUCCESS"
+          echo "========================================="
+      
+      # Notification on Success (using GitHub Actions summary)
+      - name: Create Success Summary
+        if: success()
+        run: |
+          echo "## ✅ Cribl Leader Deployment Completed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Stack Name:** ${{ env.STACK_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** SUCCESS" >> $GITHUB_STEP_SUMMARY
+          echo "**Notification Email:** ${{ env.EMAIL_TO }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Deployment finished using grd.yaml configuration." >> $GITHUB_STEP_SUMMARY
+      
+      # Notification on Failure
+      - name: Create Failure Summary
+        if: failure()
+        run: |
+          echo "## ❌ Cribl Leader Deployment FAILED" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Stack Name:** ${{ env.STACK_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** FAILED" >> $GITHUB_STEP_SUMMARY
+          echo "**Notification Email:** ${{ env.EMAIL_TO }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Pipeline failed. Check workflow logs for details." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View Workflow Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
