@@ -1,0 +1,44 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cribl Leader Node Deployment
+Parameters:
+  InstanceType: {Type: String}
+  KeyName: {Type: String}
+  AmiId: {Type: String}
+  VpcId: {Type: AWS::EC2::VPC::Id}
+  SubnetId: {Type: AWS::EC2::Subnet::Id}
+  SecurityGroup: {Type: AWS::EC2::SecurityGroup::Id}
+  LeaderNodeCount: {Type: Number}
+  VolumeSize: {Type: Number}
+Resources:
+  CriblLeaderLaunchConfig:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: false
+            SubnetId: !Ref SubnetId
+            Groups: [!Ref SecurityGroup]
+        BlockDeviceMappings:
+          - DeviceName: "/dev/xvda"
+            Ebs:
+              VolumeSize: !Ref VolumeSize
+              VolumeType: gp3
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            /opt/cribl/start-leader.sh
+  CriblLeaderAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: !Ref LeaderNodeCount
+      MaxSize: !Ref LeaderNodeCount
+      DesiredCapacity: !Ref LeaderNodeCount
+      VPCZoneIdentifier: [!Ref SubnetId]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref CriblLeaderLaunchConfig
+        Version: !GetAtt CriblLeaderLaunchConfig.LatestVersionNumber
+Outputs:
+  LeaderASG: {Value: !Ref CriblLeaderAutoScalingGroup}

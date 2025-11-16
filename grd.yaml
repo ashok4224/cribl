@@ -1,0 +1,15 @@
+stack_name: cribl-leader-stack
+region: ap-south-1
+cloudformation_template: cloudformation/cribl-leader.yaml
+parameters:
+  InstanceType: t3.large
+  KeyName: cribl-key
+  AmiId: ami-0abcdef123123
+  VpcId: vpc-98765abcd
+  SubnetId: subnet-54321efg
+  SecurityGroup: sg-00112233
+  LeaderNodeCount: 2
+  VolumeSize: 50
+userdata_script: scripts/leader-userdata.sh
+bootstrap_script: scripts/leader-bootstrap.sh
+notification_email: "ashok.team@company.com"
